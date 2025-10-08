@@ -97,12 +97,32 @@ try {
 
     $items = [];
     foreach ($list as $uuid => $metadata) {
+    $estadoRaw = $metadata->estadoComprobante;
+    $estado = null;
+    $estatusSat = null;    
+    
+    if ($estadoRaw !== null) {
+        $estadoRawLower = strtolower((string)$estadoRaw);
+        if (strpos($estadoRawLower, 'vigente') !== false || $estadoRawLower === '1' || $estadoRawLower === 'no cancelado') {
+            $estado = 'Vigente';
+            $estatusSat = '1';
+        } elseif (strpos($estadoRawLower, 'cancelado') !== false || $estadoRawLower === '0') {
+            $estado = 'Cancelado';
+            $estatusSat = '0';
+        } else {
+            $estado = $estadoRaw;
+            $estatusSat = null; // no se pudo determinar
+        }        
+    } else {
+        $estado = 'Desconocido';
+        $estatusSat = null;
+    }
+
         $xmlFile = "{$downloadPath}/{$uuid}.xml";
         if (file_exists($xmlFile)) {
-            
-            // Extraer información adicional del XML
             $xmlContent = file_get_contents($xmlFile);
             $xml = simplexml_load_string($xmlContent);
+            
             
             // Registrar namespaces
             $xml->registerXPathNamespace('cfdi', 'http://www.sat.gob.mx/cfd/3');
@@ -114,15 +134,16 @@ try {
             $tfd = $xml->xpath('//tfd:TimbreFiscalDigital')[0] ?? null;
             
             // Determinar estado (1 = Vigente, 0 = Cancelado)
-            $estado = $metadata->estatus; // Esto viene del scraper
-            $estatusSat = ($estado === 'Vigente' || $estado === '1') ? '1' : '0';
+            $estado = $metadata->estadoComprobante; // Esto viene del scraper
+            
+            
             
             $items[] = [
                 'nombre' => "{$uuid}.xml",
                 'contenido_base64' => base64_encode($xmlContent),
                 'metadata' => [
                     'uuid' => $uuid,
-                    'estatus' => $estatusSat, // 1 o 0
+                    'estatus' => $estatudSat, // 1 o 0
                     'estatus_descripcion' => $estado,
                     'emisor' => [
                         'nombre' => (string)($emisor['Nombre'] ?? ''),
