@@ -1,9 +1,9 @@
 <?php declare(strict_types=1);
 require __DIR__ . '/../vendor/autoload.php'; 
+
 use GuzzleHttp\Client;
 use PhpCfdi\Credentials\Credential;
 use PhpCfdi\CfdiSatScraper\SatScraper;
-use PhpCfdi\CfdiSatScraper\ResourceType;
 use PhpCfdi\CfdiSatScraper\QueryByFilters;
 use PhpCfdi\CfdiSatScraper\SatHttpGateway;
 use PhpCfdi\CfdiSatScraper\Filters\DownloadType;
@@ -63,7 +63,11 @@ try {
     // =============================
     // Cliente y gateway SAT
     // =============================
-    $insecureClient = new Client(['verify' => '/etc/ssl/certs/ca-certificates.crt']);
+    $insecureClient = new Client([
+        'verify' => '/etc/ssl/certs/ca-certificates.crt',
+        'timeout' => 600,
+        'connect_timeout' => 10,
+    ]);
     $gateway = new SatHttpGateway($insecureClient);
 
     // =============================
@@ -72,104 +76,65 @@ try {
     $satScraper = new SatScraper(FielSessionManager::create($credential), $gateway);
 
     // =============================
-    // Construir query - OBTENER TODOS (vigentes y cancelados)
+    // Construir query - METADATA (vigentes y cancelados)
     // =============================
     $query = new QueryByFilters(new DateTimeImmutable($fechaInicio), new DateTimeImmutable($fechaFinal));
     $query
         ->setDownloadType(DownloadType::$tipo())
-        ->setStateVoucher(StatesVoucherOption::todos()); // Cambiado a "todos" para obtener vigentes y cancelados
+        ->setStateVoucher(StatesVoucherOption::todos());
 
     // =============================
-    // Ejecutar consulta
+    // Ejecutar consulta (solo metadata)
     // =============================
     $list = $satScraper->listByPeriod($query);
-
-    // =============================
-    // Carpeta de descargas
-    // =============================
-    $downloadPath = __DIR__ . '/storage/downloads/';
-    if (!is_dir($downloadPath)) mkdir($downloadPath, 0777, true);
-
-    // Descargar XML
-    $downloadedXmlUuids = $satScraper
-        ->resourceDownloader(ResourceType::xml(), $list, 10)
-        ->saveTo($downloadPath);
+    error_log("Número de comprobantes encontrados: " . count($list));
 
     $items = [];
     foreach ($list as $uuid => $metadata) {
-    $estadoRaw = $metadata->estadoComprobante;
-    $estado = null;
-    $estatusSat = null;    
-    
-    if ($estadoRaw !== null) {
-        $estadoRawLower = strtolower((string)$estadoRaw);
-        if (strpos($estadoRawLower, 'vigente') !== false || $estadoRawLower === '1' || $estadoRawLower === 'no cancelado') {
-            $estado = 'Vigente';
-            $estatusSat = '1';
-        } elseif (strpos($estadoRawLower, 'cancelado') !== false || $estadoRawLower === '0') {
-            $estado = 'Cancelado';
-            $estatusSat = '0';
-        } else {
-            $estado = $estadoRaw;
-            $estatusSat = null; // no se pudo determinar
-        }        
-    } else {
+        $estadoRaw = $metadata->estadoComprobante;
         $estado = 'Desconocido';
         $estatusSat = null;
-    }
 
-        $xmlFile = "{$downloadPath}/{$uuid}.xml";
-        if (file_exists($xmlFile)) {
-            $xmlContent = file_get_contents($xmlFile);
-            $xml = simplexml_load_string($xmlContent);
-            
-            
-            // Registrar namespaces
-            $xml->registerXPathNamespace('cfdi', 'http://www.sat.gob.mx/cfd/3');
-            $xml->registerXPathNamespace('tfd', 'http://www.sat.gob.mx/TimbreFiscalDigital');
-            
-            // Obtener datos del comprobante
-            $emisor = $xml->xpath('//cfdi:Emisor')[0] ?? null;
-            $receptor = $xml->xpath('//cfdi:Receptor')[0] ?? null;
-            $tfd = $xml->xpath('//tfd:TimbreFiscalDigital')[0] ?? null;
-            
-            // Determinar estado (1 = Vigente, 0 = Cancelado)
-            $estado = $metadata->estadoComprobante; // Esto viene del scraper
-            
-            
-            
-            $items[] = [
-                'nombre' => "{$uuid}.xml",
-                'contenido_base64' => base64_encode($xmlContent),
-                'metadata' => [
-                    'uuid' => $uuid,
-                    'estatus' => $estatudSat, // 1 o 0
-                    'estatus_descripcion' => $estado,
-                    'emisor' => [
-                        'nombre' => (string)($emisor['Nombre'] ?? ''),
-                        'rfc' => (string)($emisor['Rfc'] ?? '')
-                    ],
-                    'receptor' => [
-                        'nombre' => (string)($receptor['Nombre'] ?? ''),
-                        'rfc' => (string)($receptor['Rfc'] ?? '')
-                    ],
-                    'fecha' => (string)($xml['Fecha'] ?? ''),
-                    'total' => (float)($xml['Total'] ?? 0),
-                    'tipo_comprobante' => (string)($xml['TipoDeComprobante'] ?? ''),
-                    'efecto_comprobante' => (string)($xml['TipoDeComprobante'] ?? ''), // I, E, P, N
-                    'fecha_certificacion' => $tfd ? (string)($tfd['FechaTimbrado'] ?? '') : '',
-                    'sello_cfdi' => $tfd ? (string)($tfd['SelloCFD'] ?? '') : '',
-                    'sello_sat' => $tfd ? (string)($tfd['SelloSAT'] ?? '') : ''
-                ]
-            ];
+        if ($estadoRaw !== null) {
+            $estadoRawLower = strtolower((string)$estadoRaw);
+            if (strpos($estadoRawLower, 'vigente') !== false || $estadoRawLower === '1' || $estadoRawLower === 'no cancelado') {
+                $estado = 'Vigente';
+                $estatusSat = '1';
+            } elseif (strpos($estadoRawLower, 'cancelado') !== false || $estadoRawLower === '0') {
+                $estado = 'Cancelado';
+                $estatusSat = '0';
+            } else {
+                $estado = $estadoRaw;
+            }
         }
-    }
 
+        $items[] = [
+            'uuid' => $uuid,
+            'estatus' => $estatusSat,
+            'estatus_descripcion' => $estado,
+            'emisor' => [
+                'rfc' => $metadata->rfcEmisor,
+                'nombre' => $metadata->nombreEmisor,
+            ],
+            'receptor' => [
+                'rfc' => $metadata->rfcReceptor,
+                'nombre' => $metadata->nombreReceptor,
+            ],
+            'fecha_emision' => $metadata->fechaEmision,
+            'fecha_certificacion' => $metadata->fechaCertificacion,
+            'total' => $metadata->total,
+            'efecto_comprobante' => $metadata->efectoComprobante,
+            'tipo_comprobante' => $tipo,
+        ];
+    }
+    // ORDENAR POR FECHA DE CERTIFICACIÓN (más recientes primero)
+    usort($items, function ($a, $b) {
+        return strtotime($b['fecha_certificacion']) <=> strtotime($a['fecha_certificacion']);
+    });
     echo json_encode([
         'exito' => true,
         'mensaje' => 'Consulta exitosa - ' . count($items) . ' comprobantes encontrados',
         'errores' => [],
-        'xml_descargados' => $downloadedXmlUuids,
         'items' => $items
     ]);
 
@@ -178,7 +143,6 @@ try {
     $msg = $e->getMessage();
     $errores = [$msg];
 
-    // Mensajes amigables según contenido
     if (str_contains(strtolower($msg), 'expired')) {
         $userMsg = 'El certificado FIEL ha vencido.';
         $errores[] = 'Certificado vencido';
@@ -207,11 +171,4 @@ try {
     // =============================
     if (isset($cerFile) && file_exists($cerFile)) unlink($cerFile);
     if (isset($keyFile) && file_exists($keyFile)) unlink($keyFile);
-
-    if (isset($downloadPath)) {
-        $xmlFiles = glob($downloadPath . '*.xml');
-        foreach ($xmlFiles as $file) {
-            if (is_file($file)) unlink($file);
-        }
-    }
 }
